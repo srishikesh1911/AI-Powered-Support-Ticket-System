@@ -4,7 +4,7 @@ import { AuthContext } from '../context/AuthContext';
 import api from '../services/api';
 import toast from 'react-hot-toast';
 import StatusBadge from '../components/StatusBadge';
-import PriorityBadge from '../components/PriorityBadge';
+import PriorityBadge from './../components/PriorityBadge';
 import { 
   ArrowLeft, BrainCircuit, MessageSquare, Clock, ShieldCheck, UserCircle, 
   Send, Sparkles, Check, Edit2, RefreshCw, AlertTriangle
@@ -16,28 +16,34 @@ const TicketDetails = () => {
   const { user } = useContext(AuthContext);
   
   const [ticket, setTicket] = useState(null);
+  const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
   
   // Quick actions
   const [reply, setReply] = useState('');
   const [isUpdating, setIsUpdating] = useState(false);
 
-  useEffect(() => {
-    const fetchTicket = async () => {
-      try {
-        const { data } = await api.get(`/tickets/${id}`);
-        setTicket(data);
-        if (data.suggestedResponse) {
-          setReply(data.suggestedResponse);
-        }
-      } catch (error) {
-        toast.error('Failed to load ticket details');
-        navigate('/tickets');
-      } finally {
-        setLoading(false);
+  const fetchTicketAndMessages = async () => {
+    try {
+      const [ticketRes, messagesRes] = await Promise.all([
+        api.get(`/tickets/${id}`),
+        api.get(`/tickets/${id}/messages`)
+      ]);
+      setTicket(ticketRes.data);
+      setMessages(messagesRes.data || []);
+      if (ticketRes.data.suggestedResponse && !reply) {
+        setReply(ticketRes.data.suggestedResponse);
       }
-    };
-    fetchTicket();
+    } catch (error) {
+      toast.error('Failed to load ticket details');
+      navigate('/tickets');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchTicketAndMessages();
   }, [id, navigate]);
 
   const handleUpdateStatus = async (newStatus) => {
@@ -53,11 +59,55 @@ const TicketDetails = () => {
     }
   };
 
-  const handleSendReply = (e) => {
+  const handleSendReply = async (e) => {
     e.preventDefault();
     if (!reply.trim()) return;
-    toast.success('Reply sent successfully (Demo)');
-    setReply('');
+
+    try {
+      setIsUpdating(true);
+      const { data: newMsg } = await api.post(`/tickets/${id}/messages`, {
+        message: reply.trim()
+      });
+      setMessages(prev => [...prev, newMsg]);
+      toast.success('Message sent to customer!');
+      setReply('');
+    } catch (error) {
+      console.error('Failed to send reply:', error);
+      toast.error('Could not send message.');
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  // Dedicated Agent Action: Deliver Solution & Clear Ticket
+  const handleClearAndResolve = async () => {
+    const solutionText = reply.trim() || ticket?.suggestedResponse;
+    if (!solutionText) {
+      toast.error('Please enter a solution before resolving.');
+      return;
+    }
+
+    try {
+      setIsUpdating(true);
+      // 1. Post solution message
+      const { data: newMsg } = await api.post(`/tickets/${id}/messages`, {
+        message: solutionText
+      });
+      setMessages(prev => [...prev, newMsg]);
+
+      // 2. Mark ticket as resolved
+      const { data: updatedTicket } = await api.put(`/tickets/${id}`, {
+        status: 'Resolved'
+      });
+      setTicket(updatedTicket);
+      setReply('');
+      toast.success('Solution delivered & Ticket Cleared as Resolved!');
+    } catch (error) {
+      console.error('Failed to clear solution:', error);
+      toast.error('Failed to resolve ticket.');
+    } finally {
+      setIsUpdating(false);
+    }
   };
 
   if (loading) return (
@@ -91,14 +141,15 @@ const TicketDetails = () => {
         {/* Left Column - Main Ticket Info */}
         <div className="flex-1 space-y-6">
           <div className="glass-panel p-6 relative overflow-hidden">
-            {/* Background decoration */}
             <div className="absolute -top-10 -right-10 w-40 h-40 bg-blue-500/5 rounded-full blur-2xl"></div>
 
             <div className="flex justify-between items-start mb-6">
               <div>
                 <h1 className="text-2xl font-bold text-white leading-tight">{ticket.title}</h1>
                 <p className="text-slate-400 text-sm mt-2 flex items-center">
-                  <span className="uppercase text-xs tracking-wider font-semibold mr-2 px-2 py-0.5 rounded bg-slate-800 text-slate-300">#{ticket._id.substring(ticket._id.length - 8)}</span>
+                  <span className="uppercase text-xs tracking-wider font-semibold mr-2 px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                    #{ticket._id.substring(ticket._id.length - 8)}
+                  </span>
                   Created {new Date(ticket.createdAt).toLocaleString()}
                 </p>
               </div>
@@ -128,45 +179,95 @@ const TicketDetails = () => {
           <div className="glass-panel p-6">
             <h3 className="text-lg font-semibold text-white mb-6 flex items-center">
               <MessageSquare className="w-5 h-5 mr-2 text-blue-400" />
-              Conversation Thread
+              Conversation & Resolution Thread ({messages.length + 1})
             </h3>
             
-            <div className="space-y-6 mb-6">
-              {/* Customer original message */}
+            <div className="space-y-4 mb-6">
+              {/* Customer original issue */}
               <div className="flex items-start">
                 <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-slate-300 font-medium text-xs border border-slate-700 mr-3 flex-shrink-0">
                   {ticket.customer?.name?.charAt(0) || 'C'}
                 </div>
                 <div className="flex-1 bg-slate-800/40 rounded-2xl rounded-tl-none p-4 border border-slate-700/50">
-                  <p className="text-xs text-slate-400 mb-1">{ticket.customer?.name} <span className="text-slate-500 text-[10px] ml-2">{new Date(ticket.createdAt).toLocaleTimeString()}</span></p>
+                  <div className="flex justify-between items-center mb-1">
+                    <p className="text-xs font-semibold text-slate-300">{ticket.customer?.name} (Original Request)</p>
+                    <span className="text-slate-500 text-[10px]">{new Date(ticket.createdAt).toLocaleTimeString()}</span>
+                  </div>
                   <p className="text-slate-300 text-sm">{ticket.description}</p>
                 </div>
               </div>
+
+              {/* Thread messages */}
+              {messages.map(msg => {
+                const isAgentMsg = msg.sender?.role === 'Support Agent' || msg.sender?.role === 'Admin';
+                return (
+                  <div key={msg._id} className="flex items-start">
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center font-medium text-xs border mr-3 flex-shrink-0 ${
+                      isAgentMsg 
+                        ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-400' 
+                        : 'bg-slate-800 border-slate-700 text-slate-300'
+                    }`}>
+                      {msg.sender?.name?.charAt(0) || (isAgentMsg ? 'A' : 'C')}
+                    </div>
+                    <div className={`flex-1 rounded-2xl rounded-tl-none p-4 border ${
+                      isAgentMsg 
+                        ? 'bg-emerald-950/20 border-emerald-500/30' 
+                        : 'bg-slate-800/40 border-slate-700/50'
+                    }`}>
+                      <div className="flex justify-between items-center mb-1">
+                        <p className={`text-xs font-semibold ${isAgentMsg ? 'text-emerald-400' : 'text-slate-300'}`}>
+                          {msg.sender?.name || 'Support Team'} 
+                          {isAgentMsg && <span className="ml-2 text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/30">Official Solution</span>}
+                        </p>
+                        <span className="text-slate-500 text-[10px]">{new Date(msg.createdAt).toLocaleTimeString()}</span>
+                      </div>
+                      <p className="text-slate-200 text-sm whitespace-pre-wrap">{msg.message}</p>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
 
-            {/* Reply Box */}
-            <form onSubmit={handleSendReply} className="mt-8 relative">
-              <label className="block text-sm font-medium text-slate-400 mb-2">Reply to customer</label>
+            {/* Reply / Resolution Clearance Box */}
+            <form onSubmit={handleSendReply} className="mt-8 relative border-t border-slate-800 pt-6">
+              <label className="block text-sm font-medium text-slate-300 mb-2">
+                {isAgentOrAdmin ? 'Deliver Solution or Reply to Customer' : 'Add comment to your ticket'}
+              </label>
               <textarea
                 value={reply}
                 onChange={(e) => setReply(e.target.value)}
                 rows={4}
                 className="w-full bg-slate-900/50 border border-slate-700/50 rounded-xl p-4 text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 resize-none transition-all"
-                placeholder="Type your response here..."
+                placeholder={isAgentOrAdmin ? "Review AI suggested solution or type your customized resolution..." : "Type your message..."}
               />
-              <div className="flex justify-between items-center mt-3">
+              <div className="flex flex-col sm:flex-row justify-between items-center gap-3 mt-3">
                 <div className="text-xs text-slate-500 flex items-center">
-                  {isAgentOrAdmin && <Sparkles className="w-3 h-3 text-blue-400 mr-1" />}
-                  {isAgentOrAdmin ? 'AI suggested response loaded' : ''}
+                  {isAgentOrAdmin && <Sparkles className="w-3 h-3 text-cyan-400 mr-1" />}
+                  {isAgentOrAdmin ? 'AI solution ready. You can send as standard reply or Clear & Resolve.' : ''}
                 </div>
-                <button
-                  type="submit"
-                  disabled={!reply.trim()}
-                  className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:hover:bg-blue-600 text-white px-5 py-2 rounded-lg font-medium transition-colors flex items-center"
-                >
-                  <Send className="w-4 h-4 mr-2" />
-                  Send Reply
-                </button>
+                
+                <div className="flex items-center space-x-2.5">
+                  <button
+                    type="submit"
+                    disabled={!reply.trim() || isUpdating}
+                    className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-4 py-2 rounded-lg font-medium text-xs transition-colors flex items-center disabled:opacity-50"
+                  >
+                    <Send className="w-3.5 h-3.5 mr-1.5" />
+                    Send Reply
+                  </button>
+
+                  {isAgentOrAdmin && ticket.status !== 'Resolved' && (
+                    <button
+                      type="button"
+                      disabled={isUpdating}
+                      onClick={handleClearAndResolve}
+                      className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg font-bold text-xs shadow-[0_0_15px_rgba(16,185,129,0.25)] transition-all flex items-center disabled:opacity-50"
+                    >
+                      <Check className="w-4 h-4 mr-1.5" />
+                      Clear & Resolve Solution
+                    </button>
+                  )}
+                </div>
               </div>
             </form>
           </div>
@@ -182,116 +283,97 @@ const TicketDetails = () => {
               
               <h3 className="text-sm font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-cyan-400 uppercase tracking-wider mb-6 flex items-center">
                 <BrainCircuit className="w-5 h-5 mr-2 text-blue-400" />
-                AI Analysis
+                AI Analysis & Scheme
               </h3>
 
-              <div className="space-y-5">
+              <div className="space-y-4">
                 <div>
-                  <p className="text-xs text-slate-500 mb-1">Classification</p>
+                  <p className="text-xs text-slate-500 mb-1">Classification Domain</p>
                   <div className="flex justify-between items-center">
                     <span className="text-sm font-medium text-slate-200">{ticket.category}</span>
-                    <span className="text-xs text-blue-400 font-mono bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/20">{Math.round((ticket.aiConfidence || 0.94) * 100)}%</span>
+                    <span className="text-xs text-blue-400 font-mono bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/20">
+                      {Math.round((ticket.aiConfidence || 0.94) * 100)}%
+                    </span>
                   </div>
                 </div>
 
                 <div>
-                  <p className="text-xs text-slate-500 mb-1">Priority Prediction</p>
+                  <p className="text-xs text-slate-500 mb-1">Severity / Urgency</p>
                   <div className="flex justify-between items-center">
                     <span className="text-sm font-medium text-slate-200">{ticket.priority}</span>
-                    <span className="text-xs text-blue-400 font-mono bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/20">{Math.round((ticket.aiConfidence || 0.94) * 100)}%</span>
+                    <span className="text-xs text-blue-400 font-mono bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/20">
+                      {Math.round((ticket.aiConfidence || 0.94) * 100)}%
+                    </span>
                   </div>
                 </div>
 
                 <div>
-                  <p className="text-xs text-slate-500 mb-1">Recommended Team</p>
+                  <p className="text-xs text-slate-500 mb-1">Routed Team</p>
                   <div className="flex justify-between items-center">
                     <span className="text-sm font-medium text-slate-200">{ticket.assignedTeam}</span>
-                    <span className="text-xs text-blue-400 font-mono bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/20">{Math.round((ticket.aiConfidence || 0.94) * 100)}%</span>
+                    <span className="text-xs text-blue-400 font-mono bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/20">
+                      {Math.round((ticket.aiConfidence || 0.94) * 100)}%
+                    </span>
                   </div>
                 </div>
 
-                <div className="pt-4 border-t border-slate-700/50">
-                  <p className="text-xs text-slate-500 mb-2">Customer Sentiment</p>
-                  <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold border ${sentimentColor}`}>
+                <div className="pt-3 border-t border-slate-700/50">
+                  <p className="text-xs text-slate-500 mb-1.5">Detected Sentiment</p>
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold border ${sentimentColor}`}>
                     {ticket.sentiment || 'Neutral'}
                   </span>
                 </div>
                 
                 {ticket.priority === 'Critical' && (
-                  <div className="mt-4 bg-red-500/10 border border-red-500/20 rounded-lg p-3 flex items-start">
+                  <div className="mt-3 bg-red-500/10 border border-red-500/20 rounded-lg p-3 flex items-start">
                     <AlertTriangle className="w-4 h-4 text-red-400 mr-2 mt-0.5 flex-shrink-0" />
-                    <p className="text-xs text-red-300">SLA Warning: Ticket requires response within 2 hours.</p>
+                    <p className="text-xs text-red-300">Critical SLA: 2-Hour response window.</p>
                   </div>
                 )}
               </div>
             </div>
           )}
 
-          {/* Agent Actions */}
+          {/* Quick Status Modifiers */}
           {isAgentOrAdmin && (
             <div className="glass-panel p-6">
-              <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Ticket Actions</h3>
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">Quick Triage</h3>
               
-              <div className="space-y-3">
-                {ticket.status !== 'Resolved' && ticket.status !== 'Closed' && (
+              <div className="space-y-2.5">
+                {ticket.status !== 'Resolved' && (
                   <button 
                     onClick={() => handleUpdateStatus('Resolved')}
                     disabled={isUpdating}
-                    className="w-full flex items-center justify-center bg-green-500/10 text-green-400 border border-green-500/30 hover:bg-green-500/20 px-4 py-2 rounded-lg font-medium transition-colors"
+                    className="w-full flex items-center justify-center bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20 px-4 py-2 rounded-lg text-xs font-semibold transition-colors"
                   >
-                    <Check className="w-4 h-4 mr-2" />
-                    Mark as Resolved
+                    <Check className="w-4 h-4 mr-1.5" />
+                    Mark Resolved
                   </button>
                 )}
                 
-                {ticket.status !== 'In Progress' && ticket.status !== 'Resolved' && ticket.status !== 'Closed' && (
+                {ticket.status !== 'In Progress' && ticket.status !== 'Resolved' && (
                   <button 
                     onClick={() => handleUpdateStatus('In Progress')}
                     disabled={isUpdating}
-                    className="w-full flex items-center justify-center bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 px-4 py-2 rounded-lg font-medium transition-colors"
+                    className="w-full flex items-center justify-center bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 px-4 py-2 rounded-lg text-xs font-medium transition-colors"
                   >
-                    <Clock className="w-4 h-4 mr-2" />
-                    Start Progress
+                    <Clock className="w-3.5 h-3.5 mr-1.5" />
+                    Set In Progress
                   </button>
                 )}
 
-                <button 
-                  onClick={() => handleUpdateStatus('Closed')}
-                  disabled={isUpdating}
-                  className="w-full flex items-center justify-center bg-slate-800 text-slate-400 border border-slate-700 hover:text-red-400 hover:border-red-500/30 hover:bg-red-500/10 px-4 py-2 rounded-lg font-medium transition-colors mt-4"
-                >
-                  Close Ticket
-                </button>
+                {ticket.status !== 'Closed' && (
+                  <button 
+                    onClick={() => handleUpdateStatus('Closed')}
+                    disabled={isUpdating}
+                    className="w-full flex items-center justify-center bg-slate-800 text-slate-400 border border-slate-700 hover:text-red-400 hover:bg-red-500/10 px-4 py-2 rounded-lg text-xs font-medium transition-colors"
+                  >
+                    Close Ticket
+                  </button>
+                )}
               </div>
             </div>
           )}
-
-          {/* Ticket Timeline */}
-          <div className="glass-panel p-6">
-            <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Timeline</h3>
-            
-            <div className="relative border-l border-slate-700/50 ml-3 space-y-6">
-              <div className="relative pl-6">
-                <div className="absolute -left-1.5 top-1.5 w-3 h-3 rounded-full bg-slate-600 ring-4 ring-slate-900/60"></div>
-                <p className="text-sm text-slate-200">Ticket created</p>
-                <p className="text-xs text-slate-500 mt-1">{new Date(ticket.createdAt).toLocaleString()}</p>
-              </div>
-              
-              <div className="relative pl-6">
-                <div className="absolute -left-1.5 top-1.5 w-3 h-3 rounded-full bg-blue-500 ring-4 ring-slate-900/60 shadow-[0_0_8px_rgba(59,130,246,0.8)]"></div>
-                <p className="text-sm text-slate-200">AI Analysis completed</p>
-                <p className="text-xs text-slate-500 mt-1">Routed to {ticket.assignedTeam}</p>
-              </div>
-
-              {ticket.resolvedAt && (
-                <div className="relative pl-6">
-                  <div className="absolute -left-1.5 top-1.5 w-3 h-3 rounded-full bg-green-500 ring-4 ring-slate-900/60 shadow-[0_0_8px_rgba(16,185,129,0.8)]"></div>
-                  <p className="text-sm text-slate-200">Ticket resolved</p>
-                  <p className="text-xs text-slate-500 mt-1">{new Date(ticket.resolvedAt).toLocaleString()}</p>
-                </div>
-              )}
-            </div>
-          </div>
 
         </div>
       </div>
